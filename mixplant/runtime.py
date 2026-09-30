@@ -38,6 +38,7 @@ from .service_base import PlantService
 from .statemachine.gate import PreGate
 from .statemachine.machine import SequenceMachine
 from .statemachine.phases import LINE_SEQUENCES
+from .stock.service import StockService
 from .store.repository import RecordRepository, RestoreReport
 from .versioning.expiry import Validity
 from .versioning.facade import VersionedArtifacts
@@ -110,6 +111,7 @@ class PlantRuntime:
         self.pump = PumpService(self.context, self.machines["delivery"])
         self.sampler = SamplerService(self.context, self.recipes, self.machines["delivery"])
         self.audit = AuditService(self.context, self.machines["batch"], alarms=self.alarms)
+        self.stock = StockService(self.context, self.recipes, self.machines["mix"])
         self.controller = PlantController(self)
         self.boot_report: RestoreReport | None = None
         self._services: dict[str, PlantService] = {
@@ -117,6 +119,7 @@ class PlantRuntime:
             "agg": self.agg,
             "moist": self.moist,
             "cement": self.cement,
+            "stock": self.stock,
             "water": self.water,
             "mix": self.mix,
             "chute": self.chute,
@@ -146,6 +149,7 @@ class PlantRuntime:
         self._restore_id_counters()
         self._adopt_records()
         self._hydrate_machines()
+        self.stock.adopt()
         self.store.publish(
             BOOT_KIND,
             "console",
@@ -426,6 +430,71 @@ class PlantRuntime:
                 mass_kg=number(payload, "mass_kg"),
                 rate_kgs=number(payload, "rate_kgs"),
             ),
+            "stock.register": lambda payload: self.stock.register_silo(
+                request_id=text(payload, "request_id"),
+                silo=text(payload, "silo"),
+                material=text(payload, "material"),
+                opening_kg=number(payload, "opening_kg"),
+                safety_kg=number(payload, "safety_kg"),
+            ),
+            "stock.policy": lambda payload: self.stock.set_policy(
+                request_id=text(payload, "request_id"),
+                silo=text(payload, "silo"),
+                grade=text(payload, "grade"),
+                action=text(payload, "action"),
+                warn_lead_batches=optional_integer(payload, "warn_lead_batches", 3),
+            ),
+            "stock.forecast": lambda payload: self.stock.forecast(
+                grade=payload.get("grade") or None,
+                quantity=optional_number(payload, "quantity", 1.0),
+                recipe_name=payload.get("recipe") or None,
+            ),
+            "stock.precheck": lambda payload: self.stock.precheck(
+                batch_id=text(payload, "batch_id"),
+                grade=payload.get("grade") or None,
+                quantity=optional_number(payload, "quantity", 1.0),
+                recipe_name=payload.get("recipe") or None,
+            ),
+            "stock.dose": lambda payload: self.stock.dose(
+                request_id=text(payload, "request_id"),
+                batch_id=text(payload, "batch_id"),
+                silo=text(payload, "silo"),
+                material=text(payload, "material"),
+                estimated_kg=number(payload, "estimated_kg"),
+                grade=text(payload, "grade"),
+                actual_kg=payload.get("actual_kg") if payload.get("actual_kg") not in (None, "") else None,
+                readback=optional_text(payload, "readback", "scale"),
+                reason=optional_text(payload, "reason", "scale_readback_missing"),
+            ),
+            "stock.readback": lambda payload: self.stock.report_readback(
+                request_id=text(payload, "request_id"),
+                pending_id=text(payload, "pending_id"),
+                silo=text(payload, "silo"),
+                actual_kg=number(payload, "actual_kg"),
+            ),
+            "stock.confirm": lambda payload: self.stock.confirm_pending(
+                request_id=text(payload, "request_id"),
+                pending_id=text(payload, "pending_id"),
+                silo=text(payload, "silo"),
+                actual_kg=payload.get("actual_kg") if payload.get("actual_kg") not in (None, "") else None,
+                accept_estimate=bool(payload.get("accept_estimate", False)),
+                operator=optional_text(payload, "operator", "operator"),
+            ),
+            "stock.refill": lambda payload: self.stock.refill(
+                request_id=text(payload, "request_id"),
+                silo=text(payload, "silo"),
+                ticket=text(payload, "ticket"),
+                mode=optional_text(payload, "mode", "additive"),
+                added_kg=payload.get("added_kg") if payload.get("added_kg") not in (None, "") else None,
+                measured_kg=payload.get("measured_kg") if payload.get("measured_kg") not in (None, "") else None,
+            ),
+            "stock.switch": lambda payload: self.stock.switch_route(
+                request_id=text(payload, "request_id"),
+                material=text(payload, "material"),
+                silo=text(payload, "silo"),
+                transfer_kg=optional_number(payload, "transfer_kg", 0.0),
+            ),
+            "stock.reconcile": lambda payload: self.stock.reconcile(),
             "water.open_valve": lambda payload: self.water.open_valve(target_l=number(payload, "target_l")),
             "water.dispense": lambda payload: self.water.dispense(
                 litres=number(payload, "litres"), rate_lps=number(payload, "rate_lps")

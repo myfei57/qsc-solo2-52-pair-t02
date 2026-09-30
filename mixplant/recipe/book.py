@@ -73,6 +73,18 @@ class RecipeBook:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._versions))
 
+    def current_for_grade(self, grade_code: str) -> Recipe:
+        """Return the newest published recipe written for ``grade_code``."""
+
+        matches = [
+            history[-1]
+            for history in self._versions.values()
+            if history[-1].grade.code == grade_code
+        ]
+        if not matches:
+            raise NotFoundError("no recipe is published for this grade", grade=grade_code)
+        return max(matches, key=lambda recipe: recipe.version)
+
     def history(self, name: str) -> tuple[Recipe, ...]:
         if not name:
             raise ValidationError("recipe name must not be empty")
