@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .clock import Clock
 from .config import StationConfig
@@ -30,3 +31,4 @@ class SharedContext:
     batches: BatchRegistry
     gate: PreGate
     ids: SequenceIds
+    recipes: Any = None

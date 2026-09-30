@@ -17,12 +17,12 @@ from tests.support import publish_and_select
 
 
 def test_pages_are_declared() -> None:
-    assert set(PAGES) == {"recipe", "batch", "discharge", "alarms"}
+    assert set(PAGES) == {"recipe", "batch", "discharge", "alarms", "inventory"}
 
 
 def test_every_page_renders_with_live_state(runtime: PlantRuntime) -> None:
     store = PageStore(runtime.config.web_dir)
-    assert store.names() == ("alarms", "batch", "discharge", "recipe")
+    assert store.names() == ("alarms", "batch", "discharge", "inventory", "recipe")
     for name in store.names():
         page = store.load(name)
         rendered = inject_snapshot(page, runtime.state())
@@ -87,7 +87,7 @@ def test_console_serves_state_and_commands(runtime: PlantRuntime) -> None:
     publish_and_select(runtime)
     recipes = server.handle(Request(method="GET", path="/api/recipes"))
     assert json.loads(recipes.text)["book"]["selected"] == "mix-a"
-    for path in ("/api/batch", "/api/cycle", "/api/discharge", "/api/alarms", "/api/state", "/api/plant"):
+    for path in ("/api/batch", "/api/cycle", "/api/discharge", "/api/alarms", "/api/state", "/api/plant", "/api/inventory", "/pages/inventory"):
         assert server.handle(Request(method="GET", path=path)).status == 200
     assert server.handle(Request(method="GET", path="/api/diagnostics")).ok is True
 

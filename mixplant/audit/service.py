@@ -20,11 +20,19 @@ class AuditService(PlantService):
     line = "batch"
     subject = "audit"
 
-    def __init__(self, context, machine=None, *, alarms=None) -> None:
+    def __init__(self, context, machine=None, *, alarms=None, reconciliation_provider=None) -> None:
         super().__init__(context, machine)
         self.ledger = AuditLedger()
         self._alarms = alarms
         self._samples = 0
+        # A callable returning the binder reconciliation; the console and the
+        # audit roll-up must quote the exact same numbers.
+        self._reconciliation_provider = reconciliation_provider
+
+    def binder_reconciliation(self) -> dict[str, Any] | None:
+        if self._reconciliation_provider is None:
+            return None
+        return self._reconciliation_provider()
 
     def note(self, name: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
         """Write one named event to the ledger and the stream."""
@@ -57,6 +65,9 @@ class AuditService(PlantService):
             samples=self._samples,
             now=self.context.clock.now(),
         )
+        reconciliation = self.binder_reconciliation()
+        if reconciliation is not None:
+            summary["binder_reconciliation"] = reconciliation
         self.publish(ROLLUP_KIND, {"active": True, **summary})
         return summary
 

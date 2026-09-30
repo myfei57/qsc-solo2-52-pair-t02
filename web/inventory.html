@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Binder silos</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #f5f6f8; color: #1c1f24; }
+    table { border-collapse: collapse; width: 100%; background: #fff; margin-bottom: 1rem; }
+    th, td { border: 1px solid #d7dbe0; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9rem; }
+    form { background: #fff; padding: 1rem; border: 1px solid #d7dbe0; margin-bottom: 1rem; }
+    input, button, select { padding: 0.35rem 0.5rem; margin: 0.2rem; }
+    nav a { margin-right: 0.8rem; }
+    .flag { font-weight: 600; }
+    .bad { color: #b3261e; font-weight: 700; }
+    .warn { color: #a15c00; font-weight: 700; }
+    .ok { color: #1a7f37; }
+  </style>
+</head>
+<body>
+  <nav><a href="/pages/recipe">recipe</a><a href="/pages/batch">batch</a><a href="/pages/discharge">discharge</a><a href="/pages/alarms">alarms</a><a href="/pages/inventory">silos</a></nav>
+  <h1>Cement &amp; fly ash silos</h1>
+  <p>Headline remaining batches under the selected recipe:
+     <span class="flag" id="remaining"></span>
+     <span id="remaining-note"></span></p>
+
+  <table id="silos">
+    <thead><tr>
+      <th>silo</th><th>material</th><th>level kg</th><th>trusted</th>
+      <th>pending kg</th><th>per batch kg</th><th>remaining batches</th>
+      <th>safety kg</th><th>action (default / grades)</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <p>Reconciliation (booked balance vs movement totals):
+     <span class="flag" id="reconcile"></span></p>
+  <table id="reconcile-table">
+    <thead><tr><th>silo</th><th>booked kg</th><th>movement total kg</th><th>match</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <form id="refill">
+    <input name="silo" value="silo-1">
+    <input name="kg" value="20000">
+    <input name="client_ref" placeholder="delivery ref (idempotent)">
+    <button type="submit">refill</button>
+  </form>
+  <form id="declare">
+    <input name="silo" value="silo-1">
+    <input name="material" value="cement">
+    <input name="level_kg" value="60000">
+    <input name="client_ref" placeholder="stocktake ref (idempotent)">
+    <button type="submit">declare absolute level</button>
+  </form>
+  <form id="safety">
+    <input name="silo" value="silo-1">
+    <input name="safety_kg" value="5000">
+    <select name="default_action"><option value="alarm">alarm</option><option value="block">block</option></select>
+    <input name="grade_actions" placeholder='{"C40":"block"}'>
+    <button type="submit">set safety line</button>
+  </form>
+  <form id="resolve">
+    <input name="silo" value="silo-1">
+    <input name="batch_id" placeholder="batch id">
+    <select name="mode"><option value="apply">apply measured</option><option value="reject">write off</option></select>
+    <input name="measured_kg" placeholder="measured kg (blank = estimate)">
+    <button type="submit">confirm pending drawdown</button>
+  </form>
+
+  <script id="plant-state" type="application/json"><!--STATE--></script>
+  <script>
+    const state = JSON.parse(document.getElementById('plant-state').textContent || '{}');
+    const cement = state.subsystems && state.subsystems.cement ? state.subsystems.cement : {};
+    const inv = cement.inventory || { levels: {} };
+    const proj = cement.projection || { silos: [] };
+    const safety = cement.safety || {};
+
+    document.getElementById('remaining').textContent =
+      proj.remaining_batches === null ? 'unknown' : String(proj.remaining_batches);
+    document.getElementById('remaining').className = proj.trusted ? 'ok' : 'bad';
+    document.getElementById('remaining-note').textContent =
+      proj.trusted ? '(limiting: ' + proj.limiting_silo + ')' : '(a binder level is untrusted)';
+
+    const bySilo = {};
+    for (const p of (proj.silos || [])) bySilo[p.silo] = p;
+    const body = document.querySelector('#silos tbody');
+    for (const [silo, bal] of Object.entries(inv.levels || {})) {
+      const p = bySilo[silo] || {};
+      const pol = safety[silo] || {};
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${silo}</td><td>${bal.material}</td>` +
+        `<td>${bal.level_kg}</td>` +
+        `<td class="${bal.trusted ? 'ok' : 'bad'}">${bal.trusted ? 'yes' : 'NO — pending confirmation'}</td>` +
+        `<td>${bal.pending_kg || 0}</td>` +
+        `<td>${p.demand_kg || 0}</td>` +
+        `<td class="${p.remaining_batches === null ? 'bad' : ''}">${p.remaining_batches === null ? 'unknown' : p.remaining_batches}</td>` +
+        `<td>${pol.safety_kg ?? ''}</td>` +
+        `<td>${pol.default_action ?? ''} ${JSON.stringify(pol.grade_actions || {})}</td>`;
+      body.appendChild(row);
+    }
+
+    const rec = cement.reconciliation || { consistent: false, silos: [] };
+    const recEl = document.getElementById('reconcile');
+    recEl.textContent = rec.consistent ? 'CONSISTENT' : 'MISMATCH';
+    recEl.className = rec.consistent ? 'ok' : 'bad';
+    const recBody = document.querySelector('#reconcile-table tbody');
+    for (const row of (rec.silos || [])) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${row.silo}</td><td>${row.booked_kg}</td><td>${row.movement_total_kg}</td>` +
+        `<td class="${row.match ? 'ok' : 'bad'}">${row.match ? 'yes' : 'NO'}</td>`;
+      recBody.appendChild(tr);
+    }
+
+    async function post(path, form) {
+      const entries = Object.fromEntries(new FormData(form).entries());
+      if (path.endsWith('/safety') && entries.grade_actions) {
+        try { entries.grade_actions = JSON.parse(entries.grade_actions); } catch { delete entries.grade_actions; }
+      }
+      if (path.endsWith('/resolve') && entries.measured_kg === '') delete entries.measured_kg;
+      const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entries) });
+      return response.json();
+    }
+    const routes = {
+      refill: '/api/cement/refill',
+      declare: '/api/cement/silo',
+      safety: '/api/cement/safety',
+      resolve: '/api/cement/resolve'
+    };
+    for (const [id, path] of Object.entries(routes)) {
+      document.getElementById(id).addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try { console.log(await post(path, event.target)); } finally { location.reload(); }
+      });
+    }
+  </script>
+</body>
+</html>

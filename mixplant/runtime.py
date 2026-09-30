@@ -101,6 +101,7 @@ class PlantRuntime:
             ids=self.ids,
         )
         self.recipes = RecipeService(self.context, self.topology, self.machines["batch"])
+        object.__setattr__(self.context, "recipes", self.recipes)
         self.agg = AggService(self.context, self.recipes, self.machines["batch"])
         self.moist = MoistService(self.context, self.recipes.book, default_table(), self.machines["batch"])
         self.cement = CementService(self.context, self.machines["mix"])
@@ -109,7 +110,12 @@ class PlantRuntime:
         self.chute = ChuteService(self.context, self.recipes, self.machines["mix"])
         self.pump = PumpService(self.context, self.machines["delivery"])
         self.sampler = SamplerService(self.context, self.recipes, self.machines["delivery"])
-        self.audit = AuditService(self.context, self.machines["batch"], alarms=self.alarms)
+        self.audit = AuditService(
+            self.context,
+            self.machines["batch"],
+            alarms=self.alarms,
+            reconciliation_provider=self.cement.reconciliation,
+        )
         self.controller = PlantController(self)
         self.boot_report: RestoreReport | None = None
         self._services: dict[str, PlantService] = {
@@ -145,6 +151,7 @@ class PlantRuntime:
         self.boot_report = report
         self._restore_id_counters()
         self._adopt_records()
+        self._adopt_inventory()
         self._hydrate_machines()
         self.store.publish(
             BOOT_KIND,
@@ -229,6 +236,23 @@ class PlantRuntime:
                     validity=Validity.never(record.tick),
                 )
         self.moist.sync(corrections)
+
+    def _adopt_inventory(self) -> None:
+        """Rebuild the binder ledger from the committed inventory stream."""
+
+        inventory_kinds = {
+            "cement.open",
+            "cement.refill",
+            "cement.draw",
+            "cement.untrusted",
+            "cement.resolve",
+            "cement.safety",
+        }
+        inventory_records = tuple(
+            record for record in self.store.visible() if record.kind in inventory_kinds
+        )
+        if inventory_records:
+            self.cement.adopt_inventory(inventory_records)
 
     def _hydrate_machines(self) -> None:
         for line, machine in self.machines.items():
@@ -417,14 +441,50 @@ class PlantRuntime:
                 silo=text(payload, "silo"),
                 material=optional_text(payload, "material", "cement"),
                 level_kg=number(payload, "level_kg"),
+                client_ref=optional_text(payload, "client_ref", None),
+                reason=optional_text(payload, "reason", "manual fill"),
+            ),
+            "cement.declare_level": lambda payload: self.cement.declare_level(
+                silo=text(payload, "silo"),
+                material=optional_text(payload, "material", "cement"),
+                level_kg=number(payload, "level_kg"),
+                client_ref=optional_text(payload, "client_ref", None),
+                reason=optional_text(payload, "reason", "level declared"),
+            ),
+            "cement.refill": lambda payload: self.cement.refill(
+                silo=text(payload, "silo"),
+                kg=number(payload, "kg"),
+                client_ref=optional_text(payload, "client_ref", None),
+                material=optional_text(payload, "material", None),
+                reason=optional_text(payload, "reason", "delivery"),
+            ),
+            "cement.set_safety": lambda payload: self.cement.set_safety(
+                silo=text(payload, "silo"),
+                safety_kg=number(payload, "safety_kg"),
+                default_action=optional_text(payload, "default_action", "alarm"),
+                grade_actions=self._grade_actions(payload),
+            ),
+            "cement.resolve_draw": lambda payload: self.cement.resolve_draw(
+                silo=text(payload, "silo"),
+                batch_id=text(payload, "batch_id"),
+                mode=text(payload, "mode"),
+                measured_kg=optional_number(payload, "measured_kg", None),
+                reason=optional_text(payload, "reason", "manual confirmation"),
+            ),
+            "cement.projection": lambda payload: self.cement.projection(),
+            "cement.reconcile": lambda payload: self.cement.reconciliation(),
+            "cement.movements": lambda payload: self.cement.movements(
+                optional_text(payload, "silo", None)
             ),
             "cement.open_gate": lambda payload: self.cement.open_gate(
                 silo=text(payload, "silo"), target_kg=number(payload, "target_kg")
             ),
             "cement.close_gate": lambda payload: self.cement.close_gate(
                 silo=text(payload, "silo"),
-                mass_kg=number(payload, "mass_kg"),
-                rate_kgs=number(payload, "rate_kgs"),
+                mass_kg=optional_number(payload, "mass_kg", None),
+                rate_kgs=optional_number(payload, "rate_kgs", None),
+                batch_id=optional_text(payload, "batch_id", None),
+                readback=bool(payload.get("readback", True)),
             ),
             "water.open_valve": lambda payload: self.water.open_valve(target_l=number(payload, "target_l")),
             "water.dispense": lambda payload: self.water.dispense(
@@ -528,3 +588,10 @@ class PlantRuntime:
     def _detail(payload: Mapping[str, Any]) -> dict[str, Any]:
         raw = payload.get("detail")
         return dict(raw) if isinstance(raw, Mapping) else {}
+
+    @staticmethod
+    def _grade_actions(payload: Mapping[str, Any]) -> dict[str, str]:
+        raw = payload.get("grade_actions")
+        if not isinstance(raw, Mapping):
+            return {}
+        return {str(grade): str(action) for grade, action in raw.items()}

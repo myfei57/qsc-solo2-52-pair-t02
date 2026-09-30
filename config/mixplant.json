@@ -19,5 +19,16 @@
     "baseline_ttl_ticks": 32,
     "confirmation_ttl_ticks": 10,
     "snapshot_ttl_ticks": 64
+  },
+  "silo_safety": {
+    "silo-1": {
+      "safety_kg": 5000,
+      "default_action": "alarm",
+      "grade_actions": {"C40": "block"}
+    },
+    "silo-2": {
+      "safety_kg": 3000,
+      "default_action": "alarm"
+    }
   }
 }

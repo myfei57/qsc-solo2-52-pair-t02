@@ -45,6 +45,29 @@ class ValidityDefaults:
 
 
 @dataclass(frozen=True, slots=True)
+class SiloSafetyConfig:
+    """The fixed safety line of one binder silo.
+
+    The line is per silo; ``grade_actions`` fixes the alarm/block reaction per
+    grade and ``default_action`` covers every grade not listed.
+    """
+
+    safety_kg: float = 5000.0
+    default_action: str = "alarm"
+    grade_actions: Mapping[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, document: Mapping[str, Any]) -> "SiloSafetyConfig":
+        return cls(
+            safety_kg=float(document.get("safety_kg", 5000.0)),
+            default_action=str(document.get("default_action", "alarm")),
+            grade_actions={
+                str(grade): str(action) for grade, action in dict(document.get("grade_actions") or {}).items()
+            },
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class StationConfig:
     """Everything the runtime needs in order to boot."""
 
@@ -55,6 +78,7 @@ class StationConfig:
     web_dir: Path = Path("web")
     limits: Limits = field(default_factory=Limits)
     defaults: ValidityDefaults = field(default_factory=ValidityDefaults)
+    silo_safety: Mapping[str, SiloSafetyConfig] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, document: Mapping[str, Any]) -> "StationConfig":
@@ -62,6 +86,11 @@ class StationConfig:
 
         limits = Limits(**dict(document.get("limits") or {}))
         defaults = ValidityDefaults(**dict(document.get("defaults") or {}))
+        raw_safety = dict(document.get("silo_safety") or {})
+        silo_safety = {
+            str(silo): SiloSafetyConfig.from_mapping(dict(doc) if isinstance(doc, Mapping) else {})
+            for silo, doc in raw_safety.items()
+        }
         return cls(
             station=str(document.get("station", "plant-a")),
             host=str(document.get("host", "127.0.0.1")),
@@ -70,6 +99,7 @@ class StationConfig:
             web_dir=Path(str(document.get("web_dir", "web"))),
             limits=limits,
             defaults=defaults,
+            silo_safety=silo_safety,
         )
 
     @classmethod
@@ -94,4 +124,12 @@ class StationConfig:
             "port": self.port,
             "data_dir": str(self.data_dir),
             "limits": self.limits.as_mapping(),
+            "silo_safety": {
+                silo: {
+                    "safety_kg": policy.safety_kg,
+                    "default_action": policy.default_action,
+                    "grade_actions": dict(policy.grade_actions),
+                }
+                for silo, policy in sorted(self.silo_safety.items())
+            },
         }
